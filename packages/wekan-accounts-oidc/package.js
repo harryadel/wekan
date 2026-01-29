@@ -1,6 +1,6 @@
 Package.describe({
   summary: "OpenID Connect (OIDC) for Meteor accounts",
-  version: "1.0.10",
+  version: "1.0.11",
   name: "wekan-accounts-oidc",
   git: "https://github.com/wekan/meteor-accounts-oidc.git",
 
