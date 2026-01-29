@@ -1,4 +1,6 @@
 import {addGroupsWithAttributes, addEmail, changeFullname, changeUsername} from './loginHandler';
+import { fetch, Headers } from 'meteor/fetch';
+import https from 'https';
 
 Oidc = {};
 httpCa = false;
@@ -18,10 +20,10 @@ var profile = {};
 var serviceData = {};
 var userinfo = {};
 
-OAuth.registerService('oidc', 2, null, function (query) {
+OAuth.registerService('oidc', 2, null, async function (query) {
   var debug = process.env.DEBUG === 'true';
 
-  var token = getToken(query);
+  var token = await getToken(query);
   if (debug) console.log('XXX: register token:', token);
 
   var accessToken = token.access_token || token.id_token;
@@ -40,7 +42,7 @@ OAuth.registerService('oidc', 2, null, function (query) {
   else
   {
     // normal behaviour, getting the claims from UserInfo endpoint.
-    userinfo = getUserInfo(accessToken);
+    userinfo = await getUserInfo(accessToken);
   }
 
   if (userinfo.ocs) userinfo = userinfo.ocs.data; // Nextcloud hack
@@ -134,7 +136,7 @@ if (Meteor.release) {
 }
 
 if (process.env.ORACLE_OIM_ENABLED !== 'true' && process.env.ORACLE_OIM_ENABLED !== true) {
-  var getToken = function (query) {
+  var getToken = async function (query) {
     var debug = process.env.DEBUG === 'true';
     var config = getConfiguration();
     if(config.tokenEndpoint.includes('https://')){
@@ -142,45 +144,51 @@ if (process.env.ORACLE_OIM_ENABLED !== 'true' && process.env.ORACLE_OIM_ENABLED 
     }else{
       var serverTokenEndpoint = config.serverUrl + config.tokenEndpoint;
     }
-    var requestPermissions = config.requestPermissions;
-    var response;
+
+    const body = new URLSearchParams({
+      code: query.code,
+      client_id: config.clientId,
+      client_secret: OAuth.openSecret(config.secret),
+      redirect_uri: OAuth._redirectUri('oidc', config),
+      grant_type: 'authorization_code',
+      state: query.state
+    });
+
+    const fetchOptions = {
+      method: 'POST',
+      headers: new Headers({
+        'Accept': 'application/json',
+        'User-Agent': userAgent,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }),
+      body: body.toString()
+    };
+
+    if (httpCa) {
+      fetchOptions.agent = new https.Agent({ ca: httpCa });
+    }
 
     try {
-      var postOptions = {
-          headers: {
-            Accept: 'application/json',
-            "User-Agent": userAgent
-          },
-          params: {
-            code: query.code,
-            client_id: config.clientId,
-            client_secret: OAuth.openSecret(config.secret),
-            redirect_uri: OAuth._redirectUri('oidc', config),
-            grant_type: 'authorization_code',
-            state: query.state
-          }
-        };
-      if (httpCa) {
-	postOptions['npmRequestOptions'] = { ca: httpCa };
+      const response = await fetch(serverTokenEndpoint, fetchOptions);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-      response = HTTP.post(serverTokenEndpoint, postOptions);
+      const data = await response.json();
+      if (data.error) {
+        throw new Error("Failed to complete handshake with OIDC " + serverTokenEndpoint + ": " + data.error);
+      }
+      if (debug) console.log('XXX: getToken response: ', data);
+      return data;
     } catch (err) {
       throw _.extend(new Error("Failed to get token from OIDC " + serverTokenEndpoint + ": " + err.message),
         { response: err.response });
-    }
-    if (response.data.error) {
-      // if the http response was a json object with an error attribute
-      throw new Error("Failed to complete handshake with OIDC " + serverTokenEndpoint + ": " + response.data.error);
-    } else {
-      if (debug) console.log('XXX: getToken response: ', response.data);
-      return response.data;
     }
   };
 }
 
 if (process.env.ORACLE_OIM_ENABLED === 'true' || process.env.ORACLE_OIM_ENABLED === true) {
 
-  var getToken = function (query) {
+  var getToken = async function (query) {
     var debug = process.env.DEBUG === 'true';
     var config = getConfiguration();
     if(config.tokenEndpoint.includes('https://')){
@@ -188,58 +196,59 @@ if (process.env.ORACLE_OIM_ENABLED === 'true' || process.env.ORACLE_OIM_ENABLED 
     }else{
       var serverTokenEndpoint = config.serverUrl + config.tokenEndpoint;
     }
-    var requestPermissions = config.requestPermissions;
-    var response;
 
     // OIM needs basic Authentication token in the header - ClientID + SECRET in base64
-    var dataToken=null;
-    var strBasicToken=null;
-    var strBasicToken64=null;
-
-    dataToken = process.env.OAUTH2_CLIENT_ID + ':' + process.env.OAUTH2_SECRET;
-    strBasicToken = new Buffer(dataToken);
-    strBasicToken64 = strBasicToken.toString('base64');
+    const dataToken = process.env.OAUTH2_CLIENT_ID + ':' + process.env.OAUTH2_SECRET;
+    const strBasicToken64 = Buffer.from(dataToken).toString('base64');
 
     // eslint-disable-next-line no-console
     if (debug) console.log('Basic Token: ', strBasicToken64);
 
+    const body = new URLSearchParams({
+      code: query.code,
+      client_id: config.clientId,
+      client_secret: OAuth.openSecret(config.secret),
+      redirect_uri: OAuth._redirectUri('oidc', config),
+      grant_type: 'authorization_code',
+      state: query.state
+    });
+
+    const fetchOptions = {
+      method: 'POST',
+      headers: new Headers({
+        'Accept': 'application/json',
+        'User-Agent': userAgent,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + strBasicToken64
+      }),
+      body: body.toString()
+    };
+
+    if (httpCa) {
+      fetchOptions.agent = new https.Agent({ ca: httpCa });
+    }
+
     try {
-      var postOptions = {
-          headers: {
-            Accept: 'application/json',
-            "User-Agent": userAgent,
-            "Authorization": "Basic " + strBasicToken64
-          },
-          params: {
-            code: query.code,
-            client_id: config.clientId,
-            client_secret: OAuth.openSecret(config.secret),
-            redirect_uri: OAuth._redirectUri('oidc', config),
-            grant_type: 'authorization_code',
-            state: query.state
-          }
-        };
-      if (httpCa) {
-	postOptions['npmRequestOptions'] = { ca: httpCa };
+      const response = await fetch(serverTokenEndpoint, fetchOptions);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-      response = HTTP.post(serverTokenEndpoint, postOptions);
+      const data = await response.json();
+      if (data.error) {
+        throw new Error("Failed to complete handshake with OIDC " + serverTokenEndpoint + ": " + data.error);
+      }
+      // eslint-disable-next-line no-console
+      if (debug) console.log('XXX: getToken response: ', data);
+      return data;
     } catch (err) {
       throw _.extend(new Error("Failed to get token from OIDC " + serverTokenEndpoint + ": " + err.message),
         { response: err.response });
-    }
-    if (response.data.error) {
-      // if the http response was a json object with an error attribute
-      throw new Error("Failed to complete handshake with OIDC " + serverTokenEndpoint + ": " + response.data.error);
-    } else {
-      // eslint-disable-next-line no-console
-      if (debug) console.log('XXX: getToken response: ', response.data);
-      return response.data;
     }
   };
 }
 
 
-var getUserInfo = function (accessToken) {
+var getUserInfo = async function (accessToken) {
   var debug = process.env.DEBUG === 'true';
   var config = getConfiguration();
   // Some userinfo endpoints use a different base URL than the authorization or token endpoints.
@@ -249,24 +258,31 @@ var getUserInfo = function (accessToken) {
   } else {
     var serverUserinfoEndpoint = config.serverUrl + config.userinfoEndpoint;
   }
-  var response;
+
+  const fetchOptions = {
+    method: 'GET',
+    headers: new Headers({
+      'User-Agent': userAgent,
+      'Authorization': 'Bearer ' + accessToken
+    })
+  };
+
+  if (httpCa) {
+    fetchOptions.agent = new https.Agent({ ca: httpCa });
+  }
+
   try {
-    var getOptions = {
-        headers: {
-          "User-Agent": userAgent,
-          "Authorization": "Bearer " + accessToken
-        }
-      };
-    if (httpCa) {
-      getOptions['npmRequestOptions'] = { ca: httpCa };
+    const response = await fetch(serverUserinfoEndpoint, fetchOptions);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    response = HTTP.get(serverUserinfoEndpoint, getOptions);
+    const data = await response.json();
+    if (debug) console.log('XXX: getUserInfo response: ', data);
+    return data;
   } catch (err) {
     throw _.extend(new Error("Failed to fetch userinfo from OIDC " + serverUserinfoEndpoint + ": " + err.message),
                    {response: err.response});
   }
-  if (debug) console.log('XXX: getUserInfo response: ', response.data);
-  return response.data;
 };
 
 var getConfiguration = function () {
